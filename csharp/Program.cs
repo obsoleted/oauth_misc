@@ -14,13 +14,14 @@ namespace ConsoleApplication
 {
     public class Program
     {
+        private static bool TestMode = false;
         public static int Main(string[] args)
         {
             CommandLineApplication commandLineApplication = new CommandLineApplication(throwOnUnexpectedArg: false);
 
             var clientKeyOption = commandLineApplication.Option("-c | --client-key <client_key>", "The client key or id for the requesting application", CommandOptionType.SingleValue);
             var clientSecretOption = commandLineApplication.Option("-s | --client-secret <client_secret>", "Client secret", CommandOptionType.SingleValue);
-
+            var testModeOption = commandLineApplication.Option("-x | --test", "test mode", CommandOptionType.NoValue);
             var getRequestToken = commandLineApplication.Command("getrequesttoken", (target) =>
             {
                 Console.WriteLine("configure getRequestToken");
@@ -28,6 +29,8 @@ namespace ConsoleApplication
                 var callbackUrlOption = target.Option("-b|--callback-url <callback_url>", "callback url", CommandOptionType.SingleValue);
                 target.OnExecute(() =>
                 {
+                    TestMode = testModeOption.HasValue();
+
                     Console.WriteLine($"execute getrequesttoken '{clientSecretOption.Value() ?? String.Empty}'");
                     if (!clientKeyOption.HasValue())
                     {
@@ -55,12 +58,53 @@ namespace ConsoleApplication
                 });
             }, false);
 
-            var handleRedirect = commandLineApplication.Command("handleredirect", (target) =>
+            var handleRedirect = commandLineApplication.Command("getaccesstoken", (target) =>
             {
-                Console.WriteLine("configure handleredirect");
+                var verifierOption = target.Option("-r|--oauth-verifier <oauth_verifier>", "token verifier", CommandOptionType.SingleValue);
+                var tokenOption = target.Option("-t|--oauth-token <oauth_token>", "token", CommandOptionType.SingleValue);
+                var tokenSecretOption = target.Option("-k|--oauth-token-secret <oauth_token_secret>", "token secret", CommandOptionType.SingleValue);
+                Console.WriteLine("configure getaccesstoken");
+
                 target.OnExecute(() =>
                 {
-                    Console.WriteLine("execute handleredirect");
+                    TestMode = testModeOption.HasValue();
+
+                    if (!clientKeyOption.HasValue())
+                    {
+                        Console.WriteLine("Error: getaccesstoken requires Client Key option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+
+                    if (!clientSecretOption.HasValue())
+                    {
+                        Console.WriteLine("Error: getaccesstoken requires Client Secret option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+
+                    if (!verifierOption.HasValue())
+                    {
+                        Console.WriteLine("Error: getaccesstoken requires Verifier option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+
+                    if (!tokenOption.HasValue())
+                    {
+                        Console.WriteLine("Error: getaccesstoken requires token option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+
+                    if (!tokenSecretOption.HasValue())
+                    {
+                        Console.WriteLine($"Error: getaccesstoken requires token secret option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+                    GetTwitterAccessToken(verifierOption.Value(), clientKeyOption.Value(), clientSecretOption.Value(), tokenOption.Value(), tokenSecretOption.Value()).Wait();
+                    Console.WriteLine("execute getaccesstoken");
                     return 0;
                 });
             });
@@ -80,40 +124,112 @@ namespace ConsoleApplication
 
         public static Random Random = new Random();
 
-        public static async Task GetTwitterRequestToken(string clientKey, string clientSecret, string callbackUrl)
+        public static Dictionary<string, string> GetDefaultOAuthAuthorizationParams(string clientKey)
         {
-            const string twitterRequestTokenUrl = "https://api.twitter.com/oauth/request_token";
-            HttpClient client = new HttpClient();
-            StringContent content = new StringContent("string", Encoding.UTF8, "application/json");
             Dictionary<string, string> authorizationParams = new Dictionary<string, string>();
 
-            authorizationParams.AddUrlEncodedKeyValuePair("oauth_callback", callbackUrl);
             authorizationParams.AddUrlEncodedKeyValuePair("oauth_consumer_key", clientKey);
             authorizationParams.AddUrlEncodedKeyValuePair("oauth_nonce", GenerateNonce());
             authorizationParams.AddUrlEncodedKeyValuePair("oauth_signature_method", "HMAC-SHA1");
             authorizationParams.AddUrlEncodedKeyValuePair("oauth_timestamp", SecondsSinceEpoch().ToString());
             authorizationParams.AddUrlEncodedKeyValuePair("oauth_version", "1.0");
+            return authorizationParams;
+        }
 
-            string orderParameterString = string.Join("&", authorizationParams.OrderBy((kv) => kv.Key).Select((h) => $"{h.Key}={h.Value}"));
+        public static AuthenticationHeaderValue GetHeaderFromParams(Dictionary<string, string> authorizationParams)
+        {
+            var oAuthHeaderValue = string.Join(", ", authorizationParams.Select((param) => $"{param.Key}=\"{param.Value}\""));
+            return new AuthenticationHeaderValue("OAuth", oAuthHeaderValue);
+        }
 
-            Console.WriteLine(orderParameterString);
-            var signatureBaseString = GetSignatureBaseString(HttpMethod.Post, twitterRequestTokenUrl, orderParameterString);
-            var signingKey = GetSigningKey(clientSecret, null);
-            var signature = GetSignature(signatureBaseString, signingKey);
+        public static async Task GetTwitterAccessToken(string verifier, string clientKey, string clientSecret, string token, string tokenSecret)
+        {
 
-            Console.WriteLine($"Ordered Parameters: {orderParameterString}");
-            Console.WriteLine($"SignatureBaseString: {signatureBaseString}");
-            Console.WriteLine($"SigningKey: {signingKey}");
+            const string twitterAccessTokenUrl = "https://api.twitter.com/oauth/access_token";
+            if (TestMode)
+            {
+                clientKey = "cChZNFj6T5R0TigYB9yd1w";
+                clientSecret = "L8qq9PZyRg6ieKGEKhZolGC0vJWLw8iEJ88DRdyOg";
+                verifier = "uw7NjWHT6OJ1MpJOXsHfNxoAhPKpgI8BlYDhxEjIBY";
+                token = "NPcudxy0yU5T3tBzho7iCotZ3cnetKwcTIRlX0iwRl0";
+                tokenSecret = "veNRnAWe6inFuo8o2u8SLLZLjolYDmDP7SzL0YfYI";
+            }
+            HttpClient client = new HttpClient();
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("*/*"));
+
+            var authorizationParams = GetDefaultOAuthAuthorizationParams(clientKey);
+            authorizationParams.AddUrlEncodedKeyValuePair("oauth_token", token);
+
+            Dictionary<string, string> bodyParams = new Dictionary<string, string>();
+            bodyParams.Add("oauth_verifier", verifier);
+
+            if (TestMode)
+            {
+                authorizationParams["oauth_nonce"] = "a9900fe68e2573b27a37f10fbad6a755";
+                authorizationParams["oauth_timestamp"] = "1318467427";
+            }
+
+            var signature = GetSignatureForRequest(HttpMethod.Post, twitterAccessTokenUrl, authorizationParams.Concat(bodyParams), clientSecret, tokenSecret);
+            authorizationParams.AddUrlEncodedKeyValuePair("oauth_signature", signature);
+            client.DefaultRequestHeaders.Authorization = GetHeaderFromParams(authorizationParams);
             Console.WriteLine($"Signature: {signature}");
 
+            if (TestMode)
+            {
+                return;
+            }
+
+            FormUrlEncodedContent content = new FormUrlEncodedContent(bodyParams);
+            var response = await client.PostAsync(twitterAccessTokenUrl, content);
+            Console.WriteLine($"Response StatusCode: {response.StatusCode}");
+            var responseString = await response.Content.ReadAsStringAsync();
+            Console.WriteLine($"Response: {responseString}");
+        }
+
+        public static string GetSignatureForRequest(HttpMethod method, string requestUrl, IEnumerable<KeyValuePair<string, string>> requestParams, string clientSecret, string tokenSecret)
+        {
+            string orderParameterString = string.Join("&", requestParams.OrderBy((kv) => kv.Key).Select((h) => $"{h.Key}={h.Value}"));
+            var signatureBaseString = GetSignatureBaseString(HttpMethod.Post, requestUrl, orderParameterString);
+            var signingKey = GetSigningKey(clientSecret, tokenSecret);
+            return GetSignature(signatureBaseString, signingKey);
+        }
+
+        public static async Task GetTwitterRequestToken(string clientKey, string clientSecret, string callbackUrl)
+        {
+            if (TestMode)
+            {
+                clientKey = "cChZNFj6T5R0TigYB9yd1w";
+                clientSecret = "L8qq9PZyRg6ieKGEKhZolGC0vJWLw8iEJ88DRdyOg";
+                callbackUrl = "http://localhost/sign-in-with-twitter/";
+            }
+            const string twitterRequestTokenUrl = "https://api.twitter.com/oauth/request_token";
+            HttpClient client = new HttpClient();
+            Dictionary<string, string> authorizationParams = GetDefaultOAuthAuthorizationParams(clientKey);
+
+            if (TestMode)
+            {
+                authorizationParams["oauth_nonce"] = "ea9ec8429b68d6b77cd5600adbbb0456";
+                authorizationParams["oauth_timestamp"] = "1318467427";
+            }
+
+            authorizationParams.AddUrlEncodedKeyValuePair("oauth_callback", callbackUrl);
+
+
+            var signature = GetSignatureForRequest(HttpMethod.Post, twitterRequestTokenUrl, authorizationParams, clientSecret, null);
+
+            Console.WriteLine($"Signature: {signature}");
+            if (TestMode)
+            {
+                return;
+            }
+
             authorizationParams.AddUrlEncodedKeyValuePair("oauth_signature", signature);
-            var oAuthHeaderValue = string.Join(", ", authorizationParams.Select((param) => $"{param.Key}=\"{param.Value}\""));
-            Console.WriteLine($"oAuthHeaderValue: {oAuthHeaderValue}");
-            client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("OAuth", oAuthHeaderValue);
+            client.DefaultRequestHeaders.Authorization = GetHeaderFromParams(authorizationParams);
             client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
             var result = await client.PostAsync(twitterRequestTokenUrl, new StringContent(""));
 
             Console.WriteLine($"Result Status Code: {result.StatusCode}");
+
 
             var responseString = await result.Content.ReadAsStringAsync();
 
