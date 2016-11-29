@@ -22,6 +22,7 @@ namespace ConsoleApplication
             var clientKeyOption = commandLineApplication.Option("-c | --client-key <client_key>", "The client key or id for the requesting application", CommandOptionType.SingleValue);
             var clientSecretOption = commandLineApplication.Option("-s | --client-secret <client_secret>", "Client secret", CommandOptionType.SingleValue);
             var testModeOption = commandLineApplication.Option("-x | --test", "test mode", CommandOptionType.NoValue);
+
             var getRequestToken = commandLineApplication.Command("getrequesttoken", (target) =>
             {
                 Console.WriteLine("configure getRequestToken");
@@ -109,6 +110,45 @@ namespace ConsoleApplication
                 });
             });
 
+            commandLineApplication.Command("verifyaccesstoken", (target) =>
+            {
+                var accessTokenOption = target.Option("-t|--access-token <access_token>", "access token", CommandOptionType.SingleValue);
+                var accessTokenSecretOption = target.Option("-k|--access-token-secret <access_token_secret> ", "access token secret", CommandOptionType.SingleValue);
+
+                target.OnExecute(() =>
+                {
+
+                    if (!clientKeyOption.HasValue())
+                    {
+                        Console.WriteLine("Error: verifyaccesstoken requires Client Key option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+
+                    if (!clientSecretOption.HasValue())
+                    {
+                        Console.WriteLine("Error: verifyaccesstoken requires Client Secret option to be specified");
+                        target.ShowHelp();
+                        return 2;
+                    }
+                    if (!accessTokenOption.HasValue())
+                    {
+                        Console.WriteLine("Error: access token option must be specified for this command.");
+                        return 2;
+                    }
+
+                    if (!accessTokenSecretOption.HasValue())
+                    {
+                        Console.WriteLine("Error: access token secret must be specified for this command.");
+                        return 2;
+                    }
+
+                    VerifyTwitterCredentials(clientKeyOption.Value(), clientSecretOption.Value(), accessTokenOption.Value(), accessTokenSecretOption.Value()).Wait();
+
+                    return 0;
+                });
+            });
+
             commandLineApplication.OnExecute(() =>
             {
                 if (clientKeyOption.HasValue())
@@ -138,7 +178,7 @@ namespace ConsoleApplication
 
         public static AuthenticationHeaderValue GetHeaderFromParams(Dictionary<string, string> authorizationParams)
         {
-            var oAuthHeaderValue = string.Join(", ", authorizationParams.Select((param) => $"{param.Key}=\"{param.Value}\""));
+            var oAuthHeaderValue = string.Join(", ", authorizationParams.OrderBy((kv) => kv.Key).Select((param) => $"{param.Key}=\"{param.Value}\""));
             return new AuthenticationHeaderValue("OAuth", oAuthHeaderValue);
         }
 
@@ -184,12 +224,41 @@ namespace ConsoleApplication
             Console.WriteLine($"Response StatusCode: {response.StatusCode}");
             var responseString = await response.Content.ReadAsStringAsync();
             Console.WriteLine($"Response: {responseString}");
+            var responseParams = QueryHelpers.ParseQuery(responseString);
+            foreach (var responseParam in responseParams)
+            {
+                Console.WriteLine($"{responseParam.Key} {string.Join(", ", responseParam.Value)}");
+            }
+        }
+
+        public static async Task VerifyTwitterCredentials(string clientKey, string clientSecret, string token, string tokenSecret)
+        {
+            Console.WriteLine("Verifying token...");
+            const string twitterVerifyCredentialsUrl = "https://api.twitter.com/1.1/account/verify_credentials.json";
+            HttpClient client = new HttpClient();
+            client.DefaultRequestHeaders.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+
+            var authorizationParams = GetDefaultOAuthAuthorizationParams(clientKey);
+            authorizationParams.AddUrlEncodedKeyValuePair("oauth_token", token);
+
+            var signature = GetSignatureForRequest(HttpMethod.Get, twitterVerifyCredentialsUrl, authorizationParams, clientSecret, tokenSecret);
+            authorizationParams.AddUrlEncodedKeyValuePair("oauth_signature", signature);
+
+            client.DefaultRequestHeaders.Authorization = GetHeaderFromParams(authorizationParams);
+
+            var response = await client.GetAsync(twitterVerifyCredentialsUrl);
+
+            Console.WriteLine($"Response Code: {response.StatusCode}");
+
+            var responseTxt = await response.Content.ReadAsStringAsync();
+
+            Console.WriteLine($"Response: {responseTxt}");
         }
 
         public static string GetSignatureForRequest(HttpMethod method, string requestUrl, IEnumerable<KeyValuePair<string, string>> requestParams, string clientSecret, string tokenSecret)
         {
             string orderParameterString = string.Join("&", requestParams.OrderBy((kv) => kv.Key).Select((h) => $"{h.Key}={h.Value}"));
-            var signatureBaseString = GetSignatureBaseString(HttpMethod.Post, requestUrl, orderParameterString);
+            var signatureBaseString = GetSignatureBaseString(method, requestUrl, orderParameterString);
             var signingKey = GetSigningKey(clientSecret, tokenSecret);
             return GetSignature(signatureBaseString, signingKey);
         }
